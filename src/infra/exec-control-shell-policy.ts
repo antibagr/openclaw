@@ -29,12 +29,59 @@ const INTERACTIVE_CHANNEL_LOGIN_DENY_MESSAGE = [
 const SECURITY_AUDIT_SUPPRESSION_WARNING =
   "Warning: security audit suppression changes require explicit approval unless exec is running in yolo mode.";
 
-const OPENCLAW_GLOBAL_FLAGS_WITH_VALUES = new Set(["--container", "--log-level", "--profile"]);
+const SSH_FILE_READ_WARNING = "Warning: Reading SSH files requires explicit approval.";
 
-const OPENCLAW_GLOBAL_FLAGS_WITHOUT_VALUES = new Set(["--dev", "--no-color"]);
+const CONTROL_OPTION_FLAGS_WITH_VALUES = new Set([
+  "--channel",
+  "--container",
+  "--log-level",
+  "--profile",
+]);
 
-const READ_ONLY_CONFIG_SUBCOMMANDS = new Set(["get", "schema", "validate"]);
-const MUTATING_CONFIG_SUBCOMMANDS = new Set(["set", "unset", "patch", "apply"]);
+type ControlCommandOption = {
+  name: string;
+  value: string | true;
+};
+
+type NormalizedControlCommand = {
+  executable: string;
+  argv: string[];
+  raw: string;
+  context: ControlShellCandidateContext;
+  words: string[];
+  options: readonly ControlCommandOption[];
+  operands: readonly string[];
+};
+
+type ControlOptionPattern = {
+  value?: string | RegExp;
+  present?: boolean;
+};
+
+type ControlOperandPattern = {
+  value?: string | RegExp;
+  pathUnder?: ".ssh";
+};
+
+type ControlCommandPattern = {
+  executable?: string | readonly string[];
+  command?: readonly (readonly string[])[];
+  options?: Readonly<Record<string, ControlOptionPattern>>;
+  operands?: readonly ControlOperandPattern[];
+  text?: string | RegExp;
+  commandText?: string | RegExp;
+};
+
+type ControlShellPolicyContext = {
+  command: string;
+  invocations: readonly NormalizedControlCommand[];
+};
+
+type ControlShellPolicy = {
+  name: string;
+  decision: Exclude<ControlShellPolicyDecision, { kind: "allow" }>;
+  matches: (context: ControlShellPolicyContext) => boolean;
+};
 
 function normalizeCommandBaseName(token: string | undefined): string {
   if (!token) {
@@ -58,9 +105,9 @@ function stripOpenClawPackageRunner(argv: string[]): string[] {
   if (
     (commandName === "pnpm" || commandName === "npm" || commandName === "yarn") &&
     (argv[1] === "exec" || argv[1] === "dlx" || argv[1] === "run") &&
-    normalizeCommandBaseName(argv[2]) === "openclaw"
+    normalizeCommandBaseName(argv[argv[2] === "--" ? 3 : 2]) === "openclaw"
   ) {
-    return argv.slice(2);
+    return argv.slice(argv[2] === "--" ? 3 : 2);
   }
   if (commandName === "bun" && normalizeCommandBaseName(argv[1]) === "openclaw") {
     return argv.slice(1);
@@ -88,63 +135,6 @@ function stripOpenClawPackageRunner(argv: string[]): string[] {
   return argv;
 }
 
-function stripOpenClawGlobalOptions(argv: string[]): string[] | null {
-  const openclawArgv = stripOpenClawPackageRunner(argv);
-  if (normalizeCommandBaseName(openclawArgv[0]) !== "openclaw") {
-    return null;
-  }
-  let index = 1;
-  while (index < openclawArgv.length) {
-    const arg = openclawArgv[index] ?? "";
-    if (OPENCLAW_GLOBAL_FLAGS_WITHOUT_VALUES.has(arg)) {
-      index += 1;
-      continue;
-    }
-    if (OPENCLAW_GLOBAL_FLAGS_WITH_VALUES.has(arg)) {
-      index += 2;
-      continue;
-    }
-    if ([...OPENCLAW_GLOBAL_FLAGS_WITH_VALUES].some((flag) => arg.startsWith(`${flag}=`))) {
-      index += 1;
-      continue;
-    }
-    break;
-  }
-  return openclawArgv.slice(index);
-}
-
-export function parseOpenClawChannelsLoginShellCommand(raw: string): boolean {
-  const argv = splitShellArgs(raw);
-  return argv ? isInteractiveOpenClawChannelLoginArgv(argv) : false;
-}
-
-function isInteractiveOpenClawChannelLoginArgv(argv: string[]): boolean {
-  const openclawArgs = stripOpenClawGlobalOptions(argv);
-  return (
-    openclawArgs !== null &&
-    (openclawArgs[0] === "channels" || openclawArgs[0] === "channel") &&
-    openclawArgs[1] === "login"
-  );
-}
-
-function isReadOnlySecurityAuditSuppressionInspection(argv: string[]): boolean {
-  const openclawArgs = stripOpenClawGlobalOptions(argv);
-  return (
-    openclawArgs !== null &&
-    openclawArgs[0] === "config" &&
-    READ_ONLY_CONFIG_SUBCOMMANDS.has(openclawArgs[1] ?? "")
-  );
-}
-
-function isMutatingOpenClawConfigCommand(argv: string[]): boolean {
-  const openclawArgs = stripOpenClawGlobalOptions(argv);
-  return (
-    openclawArgs !== null &&
-    openclawArgs[0] === "config" &&
-    MUTATING_CONFIG_SUBCOMMANDS.has(openclawArgs[1] ?? "")
-  );
-}
-
 function textMentionsSecurityAuditSuppressions(value: string): boolean {
   const normalized = value.toLowerCase();
   return (
@@ -155,17 +145,111 @@ function textMentionsSecurityAuditSuppressions(value: string): boolean {
   );
 }
 
-function candidateMentionsSecurityAuditSuppressions(candidate: ControlShellCandidate): boolean {
-  return textMentionsSecurityAuditSuppressions(`${candidate.raw} ${candidate.argv.join(" ")}`);
+function normalizeOptionName(token: string): string {
+  return token.length > 1 ? token.replace(/=.+$/u, "") : token;
+}
+
+function appendOption(options: ControlCommandOption[], name: string, value: string | true): void {
+  options.push({ name: normalizeOptionName(name), value });
+}
+
+function parseNormalizedCommandWords(argv: string[]): {
+  executable: string;
+  words: string[];
+  options: ControlCommandOption[];
+  operands: string[];
+} | null {
+  const strippedArgv = stripOpenClawPackageRunner(argv);
+  const executable = normalizeCommandBaseName(strippedArgv[0]);
+  if (!executable) {
+    return null;
+  }
+  const words: string[] = [];
+  const options: ControlCommandOption[] = [];
+  const operands: string[] = [];
+  let index = 1;
+  let optionsTerminated = false;
+
+  while (index < strippedArgv.length) {
+    const token = strippedArgv[index] ?? "";
+    if (!optionsTerminated && token === "--") {
+      optionsTerminated = true;
+      index += 1;
+      continue;
+    }
+    if (!optionsTerminated && token.startsWith("--") && token.length > 2) {
+      const equalsIndex = token.indexOf("=");
+      if (equalsIndex > 2) {
+        appendOption(options, token.slice(0, equalsIndex), token.slice(equalsIndex + 1));
+        index += 1;
+        continue;
+      }
+      if (CONTROL_OPTION_FLAGS_WITH_VALUES.has(token) && strippedArgv[index + 1] !== undefined) {
+        appendOption(options, token, strippedArgv[index + 1] ?? "");
+        index += 2;
+        continue;
+      }
+      appendOption(options, token, true);
+      index += 1;
+      continue;
+    }
+    if (!optionsTerminated && token.startsWith("-") && token !== "-") {
+      appendOption(options, token, true);
+      index += 1;
+      continue;
+    }
+    words.push(token);
+    operands.push(token);
+    index += 1;
+  }
+
+  return { executable, words, options, operands };
+}
+
+function normalizeControlCommand(
+  candidate: ControlShellCandidate,
+): NormalizedControlCommand | null {
+  const parsed = parseNormalizedCommandWords(candidate.argv);
+  if (!parsed) {
+    return null;
+  }
+  return {
+    executable: parsed.executable,
+    argv: candidate.argv,
+    raw: candidate.raw,
+    context: candidate.context,
+    words: parsed.words,
+    options: parsed.options,
+    operands: parsed.operands,
+  };
+}
+
+function normalizeControlCommands(
+  candidates: readonly ControlShellCandidate[],
+): NormalizedControlCommand[] {
+  return candidates.flatMap((candidate) => {
+    const normalized = normalizeControlCommand(candidate);
+    return normalized ? [normalized] : [];
+  });
+}
+
+function commandText(invocation: NormalizedControlCommand): string {
+  return `${invocation.raw} ${invocation.argv.join(" ")}`;
+}
+
+function invocationMentionsSecurityAuditSuppressions(
+  invocation: NormalizedControlCommand,
+): boolean {
+  return textMentionsSecurityAuditSuppressions(commandText(invocation));
 }
 
 function removeCandidateText(
   command: string,
-  candidates: readonly ControlShellCandidate[],
+  invocations: readonly NormalizedControlCommand[],
 ): string {
   let remaining = command;
-  for (const candidate of candidates) {
-    const raw = candidate.raw.trim();
+  for (const invocation of invocations) {
+    const raw = invocation.raw.trim();
     if (raw.length === 0) {
       continue;
     }
@@ -174,22 +258,177 @@ function removeCandidateText(
   return remaining;
 }
 
+function stringOrRegexMatches(pattern: string | RegExp, value: string): boolean {
+  return typeof pattern === "string" ? value === pattern : pattern.test(value);
+}
+
+function matchesOneOf(value: string, expected: string | readonly string[] | undefined): boolean {
+  if (expected === undefined) {
+    return true;
+  }
+  return typeof expected === "string" ? value === expected : expected.includes(value);
+}
+
+function commandPathMatches(
+  invocation: NormalizedControlCommand,
+  command: ControlCommandPattern["command"],
+): boolean {
+  const paths = command ?? [];
+  if (paths.length === 0) {
+    return true;
+  }
+  return paths.some((path) => {
+    if (path.length > invocation.words.length) {
+      return false;
+    }
+    return path.every((part, index) => invocation.words[index] === part);
+  });
+}
+
+function optionMatches(
+  invocation: NormalizedControlCommand,
+  optionName: string,
+  pattern: ControlOptionPattern,
+): boolean {
+  const matches = invocation.options.filter((option) => option.name === optionName);
+  if (pattern.present === true && matches.length === 0) {
+    return false;
+  }
+  if (pattern.value === undefined) {
+    return matches.length > 0;
+  }
+  return matches.some(
+    (option) => option.value !== true && stringOrRegexMatches(pattern.value, option.value),
+  );
+}
+
+function pathMatchesStaticSshPath(value: string): boolean {
+  const normalized = value.replace(/\\/gu, "/");
+  return (
+    normalized === "~/.ssh" ||
+    normalized.startsWith("~/.ssh/") ||
+    normalized === ".ssh" ||
+    normalized.startsWith(".ssh/") ||
+    normalized === "./.ssh" ||
+    normalized.startsWith("./.ssh/") ||
+    normalized.includes("/.ssh/")
+  );
+}
+
+function operandMatches(value: string, pattern: ControlOperandPattern): boolean {
+  if (pattern.value !== undefined && !stringOrRegexMatches(pattern.value, value)) {
+    return false;
+  }
+  if (pattern.pathUnder === ".ssh" && !pathMatchesStaticSshPath(value)) {
+    return false;
+  }
+  return true;
+}
+
+function matchesControlCommandPattern(params: {
+  invocation: NormalizedControlCommand;
+  commandText: string;
+  pattern: ControlCommandPattern;
+}): boolean {
+  const pattern = params.pattern;
+  if (!matchesOneOf(params.invocation.executable, pattern.executable)) {
+    return false;
+  }
+  if (!commandPathMatches(params.invocation, pattern.command)) {
+    return false;
+  }
+  for (const [optionName, optionPattern] of Object.entries(pattern.options ?? {})) {
+    if (!optionMatches(params.invocation, optionName, optionPattern)) {
+      return false;
+    }
+  }
+  for (const operandPattern of pattern.operands ?? []) {
+    if (!params.invocation.operands.some((operand) => operandMatches(operand, operandPattern))) {
+      return false;
+    }
+  }
+  if (
+    pattern.text !== undefined &&
+    !stringOrRegexMatches(pattern.text, commandText(params.invocation))
+  ) {
+    return false;
+  }
+  if (
+    pattern.commandText !== undefined &&
+    !stringOrRegexMatches(pattern.commandText, params.commandText)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function hasMatchingInvocation(params: {
+  command: string;
+  invocations: readonly NormalizedControlCommand[];
+  patterns: readonly ControlCommandPattern[];
+}): boolean {
+  return params.invocations.some((invocation) =>
+    params.patterns.some((pattern) =>
+      matchesControlCommandPattern({ invocation, commandText: params.command, pattern }),
+    ),
+  );
+}
+
+const INTERACTIVE_CHANNEL_LOGIN_PATTERNS: readonly ControlCommandPattern[] = [
+  { executable: "openclaw", command: [["channels", "login"]] },
+  { executable: "openclaw", command: [["channel", "login"]] },
+];
+
+const READ_ONLY_SECURITY_AUDIT_SUPPRESSION_PATTERNS: readonly ControlCommandPattern[] = [
+  { executable: "openclaw", command: [["config", "get"]] },
+  { executable: "openclaw", command: [["config", "schema"]] },
+  { executable: "openclaw", command: [["config", "validate"]] },
+];
+
+const MUTATING_SECURITY_AUDIT_SUPPRESSION_PATTERNS: readonly ControlCommandPattern[] = [
+  { executable: "openclaw", command: [["config", "set"]] },
+  { executable: "openclaw", command: [["config", "unset"]] },
+  { executable: "openclaw", command: [["config", "patch"]] },
+  { executable: "openclaw", command: [["config", "apply"]] },
+];
+
+const SSH_FILE_READ_PATTERNS: readonly ControlCommandPattern[] = [
+  {
+    executable: ["cat", "less", "more", "head", "tail"],
+    operands: [{ pathUnder: ".ssh" }],
+  },
+];
+
 function requiresSecurityAuditSuppressionApproval(params: {
   command: string;
-  candidates: readonly ControlShellCandidate[];
+  invocations: readonly NormalizedControlCommand[];
 }): boolean {
-  const mentioningCandidates = params.candidates.filter(candidateMentionsSecurityAuditSuppressions);
-  if (mentioningCandidates.length > 0) {
-    if (mentioningCandidates.some((candidate) => isMutatingOpenClawConfigCommand(candidate.argv))) {
+  const mentioningInvocations = params.invocations.filter(
+    invocationMentionsSecurityAuditSuppressions,
+  );
+  if (mentioningInvocations.length > 0) {
+    if (
+      hasMatchingInvocation({
+        command: params.command,
+        invocations: mentioningInvocations,
+        patterns: MUTATING_SECURITY_AUDIT_SUPPRESSION_PATTERNS,
+      })
+    ) {
       return true;
     }
     if (
-      mentioningCandidates.every((candidate) =>
-        isReadOnlySecurityAuditSuppressionInspection(candidate.argv),
+      mentioningInvocations.every((invocation) =>
+        READ_ONLY_SECURITY_AUDIT_SUPPRESSION_PATTERNS.some((pattern) =>
+          matchesControlCommandPattern({
+            invocation,
+            commandText: params.command,
+            pattern,
+          }),
+        ),
       )
     ) {
       return textMentionsSecurityAuditSuppressions(
-        removeCandidateText(params.command, mentioningCandidates),
+        removeCandidateText(params.command, mentioningInvocations),
       );
     }
     return true;
@@ -200,6 +439,47 @@ function requiresSecurityAuditSuppressionApproval(params: {
   }
   return true;
 }
+
+export function parseOpenClawChannelsLoginShellCommand(raw: string): boolean {
+  const argv = splitShellArgs(raw);
+  if (!argv) {
+    return false;
+  }
+  const invocation = normalizeControlCommand({ argv, raw, context: "fallback" });
+  return invocation
+    ? INTERACTIVE_CHANNEL_LOGIN_PATTERNS.some((pattern) =>
+        matchesControlCommandPattern({ invocation, commandText: raw, pattern }),
+      )
+    : false;
+}
+
+const CONTROL_SHELL_POLICIES: readonly ControlShellPolicy[] = [
+  {
+    name: "interactive-channel-login",
+    decision: { kind: "deny", message: INTERACTIVE_CHANNEL_LOGIN_DENY_MESSAGE },
+    matches: ({ command, invocations }) =>
+      hasMatchingInvocation({
+        command,
+        invocations,
+        patterns: INTERACTIVE_CHANNEL_LOGIN_PATTERNS,
+      }),
+  },
+  {
+    name: "security-audit-suppression-mutation",
+    decision: { kind: "requires-approval", warning: SECURITY_AUDIT_SUPPRESSION_WARNING },
+    matches: requiresSecurityAuditSuppressionApproval,
+  },
+  {
+    name: "ssh-file-read",
+    decision: { kind: "requires-approval", warning: SSH_FILE_READ_WARNING },
+    matches: ({ command, invocations }) =>
+      hasMatchingInvocation({
+        command,
+        invocations,
+        patterns: SSH_FILE_READ_PATTERNS,
+      }),
+  },
+];
 
 function appendCandidate(
   candidates: ControlShellCandidate[],
@@ -306,18 +586,12 @@ export async function inspectControlShellCommand(params: {
     command,
     parsedSegments: params.parsedSegments,
   });
+  const invocations = normalizeControlCommands(candidates);
 
-  if (candidates.some((candidate) => isInteractiveOpenClawChannelLoginArgv(candidate.argv))) {
-    return { kind: "deny", message: INTERACTIVE_CHANNEL_LOGIN_DENY_MESSAGE };
-  }
-
-  if (
-    requiresSecurityAuditSuppressionApproval({
-      command,
-      candidates,
-    })
-  ) {
-    return { kind: "requires-approval", warning: SECURITY_AUDIT_SUPPRESSION_WARNING };
+  for (const policy of CONTROL_SHELL_POLICIES) {
+    if (policy.matches({ command, invocations })) {
+      return policy.decision;
+    }
   }
 
   return { kind: "allow" };

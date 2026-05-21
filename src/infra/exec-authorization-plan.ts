@@ -34,6 +34,7 @@ export type ExecAuthorizationRelationship =
   | "sequence"
   | "and"
   | "or"
+  | "background"
   | "wrapper-inline";
 
 export type ExecAuthorizationTransport =
@@ -112,17 +113,19 @@ const PROMPT_ONLY_RISKS = new Set<CommandRisk["kind"]>([
 ]);
 
 const UNANALYZABLE_RISKS = new Set<CommandRisk["kind"]>([
+  "command-substitution",
   "dynamic-executable",
   "line-continuation",
   "heredoc",
   "here-string",
+  "process-substitution",
   "redirect",
   "syntax-error",
 ]);
 
 const POWERSHELL_NAMES = new Set(["powershell", "pwsh"]);
 const WINDOWS_CMD_NAMES = new Set(["cmd", "cmd.exe"]);
-const POSITIONAL_CARRIER_BLOCKED_EXECUTABLES = new Set(["find", "xargs"]);
+export const POSITIONAL_CARRIER_BLOCKED_EXECUTABLES = new Set(["find", "xargs"]);
 
 function commandSegmentFromStep(step: CommandStep, context: PlanningContext): ExecCommandSegment {
   return {
@@ -157,6 +160,9 @@ function relationshipForOperator(
   if (operator === ";") {
     return "sequence";
   }
+  if (operator === "&") {
+    return "background";
+  }
   return "simple";
 }
 
@@ -173,8 +179,9 @@ function authorizationOperatorForTopology(operator: CommandOperator): Authorizat
       return "pipe";
     case "sequence":
     case "newline-sequence":
-    case "background":
       return ";";
+    case "background":
+      return "&";
     default: {
       const unreachable: never = operator.kind;
       return unreachable;
@@ -196,9 +203,32 @@ function stepReasons(step: CommandStep, risks: readonly CommandRisk[]): string[]
   return [...new Set(reasons)];
 }
 
+function isShellExpansionDynamicArgument(risk: CommandRisk): boolean {
+  return (
+    risk.kind === "dynamic-argument" &&
+    /(?:\$[A-Za-z0-9_@*?#$!-]|\$\{|`|\$\(|[<>]\()/u.test(risk.text)
+  );
+}
+
+function riskInsidePromptOnlyStep(risk: CommandRisk, explanation: CommandExplanation): boolean {
+  return [...explanation.topLevelCommands, ...explanation.nestedCommands].some(
+    (step) => riskInsideStep(risk, step) && stepReasons(step, explanation.risks).length > 0,
+  );
+}
+
 function hasBlockingRisk(explanation: CommandExplanation): string | null {
   const risk = explanation.risks.find((entry) => UNANALYZABLE_RISKS.has(entry.kind));
-  return risk ? risk.kind : null;
+  if (risk) {
+    return risk.kind;
+  }
+  const dynamicArgument = explanation.risks.find(
+    (entry) =>
+      isShellExpansionDynamicArgument(entry) && !riskInsidePromptOnlyStep(entry, explanation),
+  );
+  if (dynamicArgument) {
+    return dynamicArgument.kind;
+  }
+  return null;
 }
 
 function isPathScopedExecutableToken(token: string): boolean {
@@ -425,7 +455,10 @@ function groupsFromSteps(params: {
       current.push(entry);
       continue;
     }
-    const opToNext = operator === "&&" || operator === "||" || operator === ";" ? operator : ";";
+    const opToNext =
+      operator === "&&" || operator === "||" || operator === ";" || operator === "&"
+        ? operator
+        : ";";
     groups.push(
       finalizeGroup({
         steps: current,

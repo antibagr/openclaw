@@ -73,6 +73,41 @@ describe("exec authorization planner", () => {
     );
   });
 
+  it.each([
+    { command: "echo $(whoami)", reason: "command-substitution" },
+    { command: "echo `whoami`", reason: "command-substitution" },
+    { command: "cat <(echo ok)", reason: "process-substitution" },
+    { command: "echo $HOME", reason: "dynamic-argument" },
+  ])("treats $reason as unanalyzable shell topology", async ({ command, reason }) => {
+    const plan = await planShellAuthorization({ command });
+
+    expect(plan).toEqual(
+      expect.objectContaining({
+        ok: false,
+        dialect: "posix-shell",
+        reason,
+      }),
+    );
+  });
+
+  it("preserves background shell operators in authorization plans", async () => {
+    const plan = await planShellAuthorization({ command: "sleep 10 & echo done" });
+
+    expect(plan.ok).toBe(true);
+    expect(plan.groups).toEqual([
+      expect.objectContaining({
+        relationship: "simple",
+        opToNext: "&",
+        candidates: [expect.objectContaining({ argv: ["sleep", "10"] })],
+      }),
+      expect.objectContaining({
+        relationship: "background",
+        opFromPrevious: "&",
+        candidates: [expect.objectContaining({ argv: ["echo", "done"] })],
+      }),
+    ]);
+  });
+
   it("keeps eval as prompt-only", async () => {
     const plan = await planShellAuthorization({ command: 'eval "$OPENCLAW_CMD"' });
 
@@ -363,5 +398,22 @@ describe("exec authorization planner", () => {
     expect(rendered.command).toContain("'-c'");
     expect(rendered.command).not.toContain("git status && head -c 16");
     expect(rendered.command).toContain("head");
+  });
+
+  it("preserves background operators while rendering rewritten commands", async () => {
+    const plan = await planShellAuthorization({ command: "rg foo & head -n 5" });
+
+    const rendered = buildAuthorizedShellCommandFromPlan({
+      plan,
+      mode: "safeBins",
+      segmentSatisfiedBy: [null, "safeBins"],
+    });
+
+    expect(rendered).toEqual(expect.objectContaining({ ok: true }));
+    if (!rendered.ok) {
+      throw new Error(rendered.reason);
+    }
+    expect(rendered.command).toContain(" & ");
+    expect(rendered.command).toMatch(/'head' '-n' '5'|'[^']+\/head' '-n' '5'/);
   });
 });

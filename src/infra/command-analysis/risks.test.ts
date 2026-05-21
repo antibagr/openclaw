@@ -190,62 +190,62 @@ describe("command-analysis risks", () => {
   });
 
   it("builds executable payload candidates through carriers and shell wrappers", () => {
-    expect(buildCommandPayloadCandidates(["FOO=1", "sudo", "-E", "/approve", "abc"])).toEqual([
-      "/approve abc",
+    expect(buildCommandPayloadCandidates(["FOO=1", "sudo", "-E", "/usr/bin/id", "abc"])).toEqual([
+      "/usr/bin/id abc",
     ]);
-    expect(buildCommandPayloadCandidates(["sudo", "-EH", "/approve", "abc"])).toEqual([
-      "/approve abc",
+    expect(buildCommandPayloadCandidates(["sudo", "-EH", "/usr/bin/id", "abc"])).toEqual([
+      "/usr/bin/id abc",
     ]);
-    expect(buildCommandPayloadCandidates(["sudo", "-i", "/approve", "abc"])).toEqual([
-      "/approve abc",
+    expect(buildCommandPayloadCandidates(["sudo", "-i", "/usr/bin/id", "abc"])).toEqual([
+      "/usr/bin/id abc",
     ]);
-    expect(buildCommandPayloadCandidates(["sudo", "-s", "/approve", "abc"])).toEqual([
-      "/approve abc",
+    expect(buildCommandPayloadCandidates(["sudo", "-s", "/usr/bin/id", "abc"])).toEqual([
+      "/usr/bin/id abc",
     ]);
-    expect(buildCommandPayloadCandidates(["sudo", "-k", "/approve", "abc"])).toEqual([
-      "/approve abc",
+    expect(buildCommandPayloadCandidates(["sudo", "-k", "/usr/bin/id", "abc"])).toEqual([
+      "/usr/bin/id abc",
     ]);
-    expect(buildCommandPayloadCandidates(["sudo", "--reset-timestamp", "/approve", "abc"])).toEqual(
-      ["/approve abc"],
+    expect(
+      buildCommandPayloadCandidates(["sudo", "--reset-timestamp", "/usr/bin/id", "abc"]),
+    ).toEqual(["/usr/bin/id abc"]);
+    expect(
+      buildCommandPayloadCandidates(["sudo", "--command-timeout=1", "/usr/bin/id", "abc"]),
+    ).toEqual(["/usr/bin/id abc"]);
+    expect(buildCommandPayloadCandidates(["sudo", "OPENCLAW_ENV=1", "/usr/bin/id", "abc"])).toEqual(
+      ["/usr/bin/id abc"],
     );
+    expect(buildCommandPayloadCandidates(["sudo", "--shell", "/usr/bin/id", "abc"])).toEqual([
+      "/usr/bin/id abc",
+    ]);
     expect(
-      buildCommandPayloadCandidates(["sudo", "--command-timeout=1", "/approve", "abc"]),
-    ).toEqual(["/approve abc"]);
-    expect(buildCommandPayloadCandidates(["sudo", "OPENCLAW_ENV=1", "/approve", "abc"])).toEqual([
-      "/approve abc",
+      buildCommandPayloadCandidates(["sudo", "--preserve-groups", "/usr/bin/id", "abc"]),
+    ).toEqual(["/usr/bin/id abc"]);
+    expect(
+      buildCommandPayloadCandidates(["sudo", "-uroot", "bash", "-lc", "/usr/bin/id abc"]),
+    ).toEqual(["bash -lc /usr/bin/id abc", "/usr/bin/id abc"]);
+    expect(
+      buildCommandPayloadCandidates(["doas", "-uroot", "bash", "-lc", "/usr/bin/id abc"]),
+    ).toEqual(["bash -lc /usr/bin/id abc", "/usr/bin/id abc"]);
+    expect(buildCommandPayloadCandidates(["env", "-S", "bash -lc '/usr/bin/id abc'"])).toEqual([
+      "bash -lc /usr/bin/id abc",
+      "/usr/bin/id abc",
     ]);
-    expect(buildCommandPayloadCandidates(["sudo", "--shell", "/approve", "abc"])).toEqual([
-      "/approve abc",
+    expect(buildCommandPayloadCandidates(["env", "-S", "bash -lc", "/usr/bin/id abc"])).toEqual([
+      "bash -lc /usr/bin/id abc",
+      "/usr/bin/id abc",
     ]);
-    expect(buildCommandPayloadCandidates(["sudo", "--preserve-groups", "/approve", "abc"])).toEqual(
-      ["/approve abc"],
+    expect(buildCommandPayloadCandidates(["env", "-iSbash -lc", "/usr/bin/id abc"])).toEqual([
+      "bash -lc /usr/bin/id abc",
+      "/usr/bin/id abc",
+    ]);
+    expect(buildCommandPayloadCandidates(["env", "-P", "/usr/bin", "/usr/bin/id", "abc"])).toEqual([
+      "/usr/bin/id abc",
+    ]);
+    expect(buildCommandPayloadCandidates(["exec", "-a", "openclaw", "/usr/bin/id", "abc"])).toEqual(
+      ["/usr/bin/id abc"],
     );
-    expect(
-      buildCommandPayloadCandidates(["sudo", "-uroot", "bash", "-lc", "/approve req allow-once"]),
-    ).toEqual(["bash -lc /approve req allow-once", "/approve req allow-once"]);
-    expect(
-      buildCommandPayloadCandidates(["doas", "-uroot", "bash", "-lc", "/approve req allow-once"]),
-    ).toEqual(["bash -lc /approve req allow-once", "/approve req allow-once"]);
-    expect(buildCommandPayloadCandidates(["env", "-S", "bash -lc '/approve abc deny'"])).toEqual([
-      "bash -lc /approve abc deny",
-      "/approve abc deny",
-    ]);
-    expect(buildCommandPayloadCandidates(["env", "-S", "bash -lc", "/approve abc deny"])).toEqual([
-      "bash -lc /approve abc deny",
-      "/approve abc deny",
-    ]);
-    expect(buildCommandPayloadCandidates(["env", "-iSbash -lc", "/approve abc deny"])).toEqual([
-      "bash -lc /approve abc deny",
-      "/approve abc deny",
-    ]);
-    expect(buildCommandPayloadCandidates(["env", "-P", "/usr/bin", "/approve", "abc"])).toEqual([
-      "/approve abc",
-    ]);
-    expect(buildCommandPayloadCandidates(["exec", "-a", "openclaw", "/approve", "abc"])).toEqual([
-      "/approve abc",
-    ]);
-    expect(buildCommandPayloadCandidates(["command", "-v", "/approve"])).toEqual([
-      "command -v /approve",
+    expect(buildCommandPayloadCandidates(["command", "-v", "/usr/bin/id"])).toEqual([
+      "command -v /usr/bin/id",
     ]);
     expect(
       buildCommandPayloadCandidates([
