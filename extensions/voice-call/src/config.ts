@@ -72,6 +72,16 @@ const PlivoConfigSchema = z
   .strict();
 export type PlivoConfig = z.infer<typeof PlivoConfigSchema>;
 
+const ElevenLabsAgentsConfigSchema = z
+  .object({
+    apiKey: z.string().min(1).optional(),
+    agentId: z.string().min(1).optional(),
+    phoneNumberId: z.string().min(1).optional(),
+    pollIntervalMs: z.number().int().positive().default(5000),
+  })
+  .strict();
+export type ElevenLabsAgentsConfig = z.infer<typeof ElevenLabsAgentsConfigSchema>;
+
 export type VoiceCallTtsConfig = z.infer<typeof TtsConfigSchema>;
 
 const VoiceCallNumberRouteConfigSchema = z
@@ -404,8 +414,8 @@ export const VoiceCallConfigSchema = z
     /** Enable voice call functionality */
     enabled: z.boolean().default(false),
 
-    /** Active provider (telnyx, twilio, plivo, or mock) */
-    provider: z.enum(["telnyx", "twilio", "plivo", "mock"]).optional(),
+    /** Active provider (telnyx, twilio, plivo, elevenlabs-agents, or mock) */
+    provider: z.enum(["telnyx", "twilio", "plivo", "elevenlabs-agents", "mock"]).optional(),
 
     /** Telnyx-specific configuration */
     telnyx: TelnyxConfigSchema.optional(),
@@ -415,6 +425,9 @@ export const VoiceCallConfigSchema = z
 
     /** Plivo-specific configuration */
     plivo: PlivoConfigSchema.optional(),
+
+    /** ElevenLabs Conversational AI Agents configuration */
+    elevenlabsAgents: ElevenLabsAgentsConfigSchema.optional(),
 
     /** Phone number to call from (E.164) */
     fromNumber: E164Schema.optional(),
@@ -763,6 +776,17 @@ export function resolveVoiceCallConfig(config: VoiceCallConfigInput): VoiceCallC
     resolved.plivo.authToken = resolved.plivo.authToken ?? process.env.PLIVO_AUTH_TOKEN;
   }
 
+  // ElevenLabs Agents
+  if (resolved.provider === "elevenlabs-agents") {
+    resolved.elevenlabsAgents = resolved.elevenlabsAgents ?? { pollIntervalMs: 5000 };
+    resolved.elevenlabsAgents.apiKey =
+      resolved.elevenlabsAgents.apiKey ?? process.env.ELEVENLABS_API_KEY;
+    resolved.elevenlabsAgents.agentId =
+      resolved.elevenlabsAgents.agentId ?? process.env.ELEVENLABS_AGENT_ID;
+    resolved.elevenlabsAgents.phoneNumberId =
+      resolved.elevenlabsAgents.phoneNumberId ?? process.env.ELEVENLABS_PHONE_NUMBER_ID;
+  }
+
   // Tunnel Config
   resolved.tunnel = resolved.tunnel ?? {
     provider: "none",
@@ -804,7 +828,7 @@ export function validateProviderConfig(config: VoiceCallConfig): {
     errors.push("plugins.entries.voice-call.config.provider is required");
   }
 
-  if (!config.fromNumber && config.provider !== "mock") {
+  if (!config.fromNumber && config.provider !== "mock" && config.provider !== "elevenlabs-agents") {
     errors.push(
       config.provider === "twilio"
         ? "plugins.entries.voice-call.config.fromNumber is required (or set TWILIO_FROM_NUMBER env)"
@@ -852,6 +876,24 @@ export function validateProviderConfig(config: VoiceCallConfig): {
     if (!config.plivo?.authToken) {
       errors.push(
         "plugins.entries.voice-call.config.plivo.authToken is required (or set PLIVO_AUTH_TOKEN env)",
+      );
+    }
+  }
+
+  if (config.provider === "elevenlabs-agents") {
+    if (!config.elevenlabsAgents?.apiKey) {
+      errors.push(
+        "plugins.entries.voice-call.config.elevenlabsAgents.apiKey is required (or set ELEVENLABS_API_KEY env)",
+      );
+    }
+    if (!config.elevenlabsAgents?.agentId) {
+      errors.push(
+        "plugins.entries.voice-call.config.elevenlabsAgents.agentId is required (or set ELEVENLABS_AGENT_ID env)",
+      );
+    }
+    if (!config.elevenlabsAgents?.phoneNumberId) {
+      errors.push(
+        "plugins.entries.voice-call.config.elevenlabsAgents.phoneNumberId is required (or set ELEVENLABS_PHONE_NUMBER_ID env)",
       );
     }
   }

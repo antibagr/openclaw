@@ -19,7 +19,10 @@
       "PLIVO_AUTH_ID",
       "PLIVO_AUTH_TOKEN",
       "NGROK_AUTHTOKEN",
-      "NGROK_DOMAIN"
+      "NGROK_DOMAIN",
+      "ELEVENLABS_API_KEY",
+      "ELEVENLABS_AGENT_ID",
+      "ELEVENLABS_PHONE_NUMBER_ID"
     ]
   },
   "uiHints": {
@@ -261,7 +264,7 @@
       },
       "provider": {
         "type": "string",
-        "enum": ["telnyx", "twilio", "plivo", "mock"]
+        "enum": ["telnyx", "twilio", "plivo", "elevenlabs-agents", "mock"]
       },
       "telnyx": {
         "type": "object",
@@ -299,6 +302,25 @@
           },
           "authToken": {
             "type": "string"
+          }
+        }
+      },
+      "elevenlabsAgents": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "apiKey": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "phoneNumberId": {
+            "type": "string"
+          },
+          "pollIntervalMs": {
+            "type": "integer",
+            "minimum": 1000
           }
         }
       },

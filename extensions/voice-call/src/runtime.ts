@@ -58,6 +58,7 @@ type TelnyxProviderModule = typeof import("./providers/telnyx.js");
 type TwilioProviderModule = typeof import("./providers/twilio.js");
 type PlivoProviderModule = typeof import("./providers/plivo.js");
 type MockProviderModule = typeof import("./providers/mock.js");
+type ElevenLabsAgentsProviderModule = typeof import("./providers/elevenlabs-agents.js");
 type RealtimeVoiceRuntimeModule = typeof import("./realtime-voice.runtime.js");
 type RealtimeHandlerModule = typeof import("./webhook/realtime-handler.js");
 
@@ -74,6 +75,7 @@ let telnyxProviderPromise: Promise<TelnyxProviderModule> | undefined;
 let twilioProviderPromise: Promise<TwilioProviderModule> | undefined;
 let plivoProviderPromise: Promise<PlivoProviderModule> | undefined;
 let mockProviderPromise: Promise<MockProviderModule> | undefined;
+let elevenlabsAgentsProviderPromise: Promise<ElevenLabsAgentsProviderModule> | undefined;
 let realtimeVoiceRuntimePromise: Promise<RealtimeVoiceRuntimeModule> | undefined;
 let realtimeHandlerPromise: Promise<RealtimeHandlerModule> | undefined;
 
@@ -95,6 +97,11 @@ function loadPlivoProvider(): Promise<PlivoProviderModule> {
 function loadMockProvider(): Promise<MockProviderModule> {
   mockProviderPromise ??= import("./providers/mock.js");
   return mockProviderPromise;
+}
+
+function loadElevenLabsAgentsProvider(): Promise<ElevenLabsAgentsProviderModule> {
+  elevenlabsAgentsProviderPromise ??= import("./providers/elevenlabs-agents.js");
+  return elevenlabsAgentsProviderPromise;
 }
 
 function loadRealtimeVoiceRuntime(): Promise<RealtimeVoiceRuntimeModule> {
@@ -238,6 +245,10 @@ async function resolveProvider(config: VoiceCallConfig): Promise<VoiceCallProvid
           webhookSecurity: config.webhookSecurity,
         },
       );
+    }
+    case "elevenlabs-agents": {
+      const { ElevenLabsAgentsProvider } = await loadElevenLabsAgentsProvider();
+      return new ElevenLabsAgentsProvider(config.elevenlabsAgents ?? { pollIntervalMs: 5000 });
     }
     case "mock": {
       const { MockProvider } = await loadMockProvider();
