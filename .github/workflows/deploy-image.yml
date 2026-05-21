@@ -1,0 +1,94 @@
+name: Sync upstream & build deploy image
+
+on:
+  schedule:
+    # Monday 06:00 UTC — weekly upstream sync + rebuild
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  issues: write
+
+jobs:
+  sync-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout deploy branch
+        uses: actions/checkout@v4
+        with:
+          ref: deploy
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream https://github.com/openclaw/openclaw.git || true
+          git fetch upstream main
+
+      - name: Rebase deploy on upstream/main
+        id: rebase
+        run: |
+          if git rebase upstream/main; then
+            echo "rebase_ok=true" >> "$GITHUB_OUTPUT"
+          else
+            git rebase --abort
+            echo "rebase_ok=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Force-push rebased deploy
+        if: steps.rebase.outputs.rebase_ok == 'true'
+        run: git push --force-with-lease origin deploy
+
+      - name: Create conflict issue
+        if: steps.rebase.outputs.rebase_ok == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'rebase-conflict',
+              state: 'open',
+            });
+            if (existing.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'Rebase conflict: deploy branch vs upstream/main',
+                body: `Automated rebase of \`deploy\` on \`upstream/main\` failed.\n\nResolve manually:\n\`\`\`bash\ngit fetch upstream main\ngit rebase upstream/main\n# resolve conflicts\ngit push --force-with-lease origin deploy\n\`\`\``,
+                labels: ['rebase-conflict'],
+              });
+            }
+
+      - name: Set up Docker Buildx
+        if: steps.rebase.outputs.rebase_ok == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: steps.rebase.outputs.rebase_ok == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        if: steps.rebase.outputs.rebase_ok == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            OPENCLAW_EXTENSIONS=voice-call
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.run_number }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
